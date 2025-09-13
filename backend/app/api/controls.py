@@ -1,5 +1,7 @@
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+import logging
 
 from app.core.security import get_current_user
 from app.bot import Bot as TwitchBot
@@ -8,6 +10,15 @@ from app.services.state_service import StateService
 from app.dependencies import get_state_service
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+# --- НОВАЯ МОДЕЛЬ ДАННЫХ ДЛЯ RVC ---
+class RVCConfigUpdate(BaseModel):
+    pth_path: str
+    index_path: str
+    pitch: int = 0
+    index_rate: float = 0.75
+    f0method: str = "rmvpe"
 
 class TTSState(BaseModel):
     is_enabled: bool
@@ -18,6 +29,44 @@ class VolumeState(BaseModel):
 class GenerationSettings(BaseModel):
     temperature: float # [0.0, 1.0]
     stability: float   # [0.0, 1.0]
+
+# --- НОВЫЙ ЭНДПОИНТ ДЛЯ RVC ---
+@router.post("/rvc/configure")
+async def configure_rvc(
+    config: RVCConfigUpdate,
+    user: dict = Depends(get_current_user),
+    state_service: StateService = Depends(get_state_service)
+):
+    """Saves RVC settings and triggers model loading in the RVC API."""
+    
+    state_service.set_rvc_config(
+        pth_path=config.pth_path,
+        index_path=config.index_path,
+        pitch=config.pitch,
+        index_rate=config.index_rate,
+        f0method=config.f0method
+    )
+    
+    # Now, forward this configuration to the RVC API to load the model
+    try:
+        async with httpx.AsyncClient(base_url="http://127.0.0.1:6242", timeout=60.0) as client:
+            response = await client.post("/configure", json=config.dict())
+            response.raise_for_status()
+            
+            rvc_api_response = response.json()
+            return {
+                "message": "RVC settings saved and model loaded successfully.",
+                "rvc_api_message": rvc_api_response.get("message", "")
+            }
+    except httpx.RequestError as e:
+        error_message = f"Failed to connect to RVC API: {e}"
+        logger.error(error_message)
+        raise HTTPException(status_code=503, detail=error_message)
+    except httpx.HTTPStatusError as e:
+        error_message = f"RVC API returned an error: {e.response.status_code} - {e.response.text}"
+        logger.error(error_message)
+        raise HTTPException(status_code=e.response.status_code, detail=error_message)
+
 
 @router.post("/tts/toggle")
 async def toggle_tts(tts_state: TTSState, user: dict = Depends(get_current_user), state_service: StateService = Depends(get_state_service)):

@@ -81,6 +81,10 @@ class Bot(commands.Bot):
         # Get generation settings for the channel
         settings = self.state_service.get_generation_settings(channel_name)
         
+        # --- RVC ---
+        rvc_config = self.state_service.get_rvc_config()
+        apply_rvc = rvc_config.get("enabled", False)
+        
         # Determine which voice to use
         selected_voice_name = self.state_service.get_user_voice(channel_name, author_name) or "default"
         
@@ -91,7 +95,7 @@ class Bot(commands.Bot):
             selected_voice_name = "default"
 
         try:
-            wav_path = self.tts_service.synthesize_speech(
+            wav_path = await self.tts_service.synthesize_speech(
                 text=message.content,
                 voice_name=selected_voice_name,
                 channel_name=channel_name,
@@ -99,9 +103,11 @@ class Bot(commands.Bot):
                 length_penalty=settings.get("length_penalty", 1.0),
                 repetition_penalty=settings.get("repetition_penalty", 5.0),
                 top_k=settings.get("top_k", 50),
-                top_p=settings.get("top_p", 0.85)
+                top_p=settings.get("top_p", 0.85),
+                apply_rvc=apply_rvc,
+                rvc_config=rvc_config
             )
             if wav_path:
-                self.audio_service.add_to_queue(wav_path)
+                await self.audio_service.add_to_queue(wav_path)
         except Exception as e:
             logger.error(f"Error synthesizing audio: {e}", exc_info=True)

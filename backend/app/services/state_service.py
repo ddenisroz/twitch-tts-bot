@@ -10,24 +10,50 @@ class StateService:
         self._state_file_path = settings.BASE_DIR / "state.json"
         logger.info("Initializing State Service...")
         self.channels = {}
+        self.rvc_config = {} # НОВЫЙ АТРИБУТ
         self._load_state_from_disk()
         
     def _load_state_from_disk(self):
         try:
             if self._state_file_path.exists():
                 with open(self._state_file_path, 'r') as f:
-                    self.channels = json.load(f)
-                logger.info(f"Loaded state from {self._state_file_path}. Channels: {list(self.channels.keys())}")
+                    data = json.load(f)
+                    self.channels = data.get("channels", {})
+                    self.rvc_config = data.get("rvc_config", {})
+                logger.info(f"Loaded state from {self._state_file_path}.")
         except (json.JSONDecodeError, IOError) as e:
             logger.error(f"Could not load state from disk: {e}. Starting with a fresh state.")
             self.channels = {}
+            self.rvc_config = {}
 
     def _save_state_to_disk(self):
         try:
             with open(self._state_file_path, 'w') as f:
-                json.dump(self.channels, f, indent=4)
+                # Сохраняем все состояние в одном объекте
+                state_to_save = {
+                    "channels": self.channels,
+                    "rvc_config": self.rvc_config
+                }
+                json.dump(state_to_save, f, indent=4)
         except IOError as e:
             logger.error(f"Could not save state to disk: {e}")
+
+    # --- НОВЫЕ МЕТОДЫ ДЛЯ RVC ---
+    def get_rvc_config(self) -> dict:
+        return self.rvc_config
+    
+    def set_rvc_config(self, pth_path: str, index_path: str, pitch: int, index_rate: float, f0method: str):
+        self.rvc_config = {
+            "pth_path": pth_path,
+            "index_path": index_path,
+            "pitch": pitch,
+            "index_rate": index_rate,
+            "f0method": f0method,
+            "enabled": True # Добавим флаг включения
+        }
+        self._save_state_to_disk()
+        logger.info(f"Updated RVC config: {self.rvc_config}")
+
 
     def get_registered_channels(self):
         return list(self.channels.keys())

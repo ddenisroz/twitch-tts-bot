@@ -1,9 +1,19 @@
 {
-    "yourchy": {
-        "tts_enabled": true,
-        "volume": 0.5,
-        "user_voices": {},
-        "temperature": 0.3,
-        "stability": 0.5
+    "channels": {
+        "yourchy": {
+            "tts_enabled": true,
+            "volume": 0.5,
+            "user_voices": {},
+            "temperature": 0.3,
+            "stability": 0.5
+        }
+    },
+    "rvc_config": {
+        "pth_path": "RVC-WebUI/assets/weights/placeholder.pth",
+        "index_path": "RVC-WebUI/logs/placeholder/added_IVF1_Flat_nprobe_1_placeholder_v2.index",
+        "pitch": 0,
+        "index_rate": 0.75,
+        "f0method": "rmvpe",
+        "enabled": true
     }
 }

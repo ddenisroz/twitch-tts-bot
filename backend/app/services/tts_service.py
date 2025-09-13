@@ -8,6 +8,7 @@ import numpy as np
 import soundfile as sf
 from ruaccent import RUAccent
 from scipy import signal
+import httpx # ДОБАВЛЯЕМ ИМПОРТ
 
 from TTS.api import TTS
 
@@ -60,6 +61,9 @@ class TTSService:
     def __init__(self):
         logger.info("Initializing Coqui TTS Service...")
 
+        # --- RVC HTTP Client ---
+        self.rvc_client = httpx.AsyncClient(base_url="http://127.0.0.1:6242", timeout=30.0)
+
         self.voices_path = settings.VOICES_PATH
         self.voices_path.mkdir(exist_ok=True)
 
@@ -105,10 +109,45 @@ class TTSService:
 
         return None
 
-    def synthesize_speech(self, text: str, voice_name: str = "default", channel_name: str = "default",
+    async def _apply_rvc_conversion(self, input_wav_path: str, rvc_config: dict) -> str | None:
+        """Sends an audio file to the RVC WebUI for voice conversion."""
+        if not self.rvc_client:
+            logger.error("RVC client not initialized.")
+            return None
+
+        url = "/process-file"
+        params = {"f0method": rvc_config.get("f0method", "rmvpe")}
+        
+        try:
+            with open(input_wav_path, "rb") as audio_file:
+                files = {"audio_file": (Path(input_wav_path).name, audio_file, "audio/wav")}
+                
+                logger.info(f"Sending request to RVC API: {url} with params {params}")
+                response = await self.rvc_client.post(url, params=params, files=files)
+                
+                response.raise_for_status()  # Вызовет исключение для статусов 4xx/5xx
+
+                data = response.json()
+                output_path = data.get("output_path")
+                
+                if output_path and Path(output_path).exists():
+                    logger.info(f"RVC conversion successful. Output at: {output_path}")
+                    return output_path
+                else:
+                    logger.error(f"RVC API returned no valid path: {data}")
+                    return None
+
+        except httpx.RequestError as e:
+            logger.error(f"Error requesting RVC API: {e}", exc_info=True)
+            return None
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during RVC conversion: {e}", exc_info=True)
+            return None
+
+    async def synthesize_speech(self, text: str, voice_name: str = "default", channel_name: str = "default",
                           temperature: float = 0.75, length_penalty: float = 1.0, repetition_penalty: float = 5.0,
-                          top_k: int = 50, top_p: float = 0.85) -> str | None:
-        """Synthesize speech using Coqui TTS with improved parameters."""
+                          top_k: int = 50, top_p: float = 0.85, apply_rvc: bool = False, rvc_config: dict = None) -> str | None:
+        """Synthesize speech using Coqui TTS with improved parameters and optional RVC."""
         if not self.tts:
             logger.error("Coqui TTS model is not available.")
             return None
@@ -162,6 +201,18 @@ class TTSService:
             sf.write(str(output_path), wav_final, model_sample_rate, subtype='PCM_16')
 
             logger.info(f"Audio synthesized and saved to {output_path}")
+
+            # --- RVC INTEGRATION ---
+            if apply_rvc and rvc_config:
+                logger.info("Applying RVC conversion...")
+                rvc_output_path = await self._apply_rvc_conversion(str(output_path), rvc_config)
+                if rvc_output_path:
+                    # Optionally, remove the intermediate XTTS file
+                    # output_path.unlink() 
+                    return rvc_output_path
+                else:
+                    logger.warning("RVC conversion failed. Returning original XTTS audio.")
+
             return str(output_path)
 
         except Exception as e:
