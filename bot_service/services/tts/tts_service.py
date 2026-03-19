@@ -240,7 +240,7 @@ class TTSService:
             # Add to Queue
             # Add to Queue
             task_id = await get_memory_tts_queue().add_task(
-                user_id=rate_limit_id, # Using ID for tracking
+                user_id=int(user_id),
                 text=text,
                 voice=voice,
                 channel=channel,

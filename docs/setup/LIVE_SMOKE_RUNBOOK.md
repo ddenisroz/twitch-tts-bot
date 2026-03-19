@@ -18,7 +18,7 @@
 2. `gateway-managed` synth для `qwen`
 3. `self-hosted endpoint` для `f5`
 4. `self-hosted endpoint` для `qwen` через compatibility path
-5. `qwen` voice CRUD как ожидаемый `501`
+5. `qwen` voice/admin CRUD через backend/upstream contract
 
 ## Preflight
 
@@ -33,6 +33,7 @@
 - `bot_service/.env` существует и заполнен
 - `frontend/.env` существует и указывает на `bot_service`
 - backend знает URL и API keys для TTS upstreams
+- provider-specific direct keys (`F5_TTS_SERVICE_API_KEY`, `QWEN_TTS_SERVICE_API_KEY`) не подменяются одним только `TTS_GATEWAY_API_KEY`
 - `LOCAL_TTS_ALLOWED_HOSTS` и `LOCAL_TTS_ALLOWED_CIDRS` настроены
 
 ## Что preflight не гарантирует
@@ -59,6 +60,7 @@
 - `GET /api/tts/health?provider=f5`
 - `GET /api/tts/health?provider=qwen`
 - `GET /api/voices/providers/capabilities`
+- открыть `/tts-player`, потому что website-mode воспроизведение без него не стартует
 
 ## Сценарии
 
@@ -87,6 +89,7 @@
 - local endpoint успешно проходит `test-connection`
 - конфиг сохраняется
 - synth идёт через пользовательский self-hosted endpoint
+- upload smoke использует [female_1.wav](/H:/Programming/raw_code/AI/Python/TTS_TTV_0.02/female_1.wav)
 
 ### S4. Self-hosted Qwen
 
@@ -95,6 +98,7 @@
 - `test-connection` проходит с compatibility warning
 - synth идёт через `/api/prepare -> /api/stream/{id}` adapter
 - это не считается ошибкой текущей фазы
+- upload smoke использует [female_1.wav](/H:/Programming/raw_code/AI/Python/TTS_TTV_0.02/female_1.wav) и валидный `API_KEY` worker-а
 
 ### S5. Qwen voice/admin CRUD
 

@@ -16,18 +16,18 @@ import {
     Settings,
     Trash2,
     Upload,
+    User,
     XCircle,
     Zap
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
-
-import { TABLE_CLASSES } from '@/constants/designSystem';
 import { useAuth } from '@/context/AuthContext';
 import { useIntegrations } from '@/context/IntegrationsContext';
 import {
     useDeleteVoiceMutation,
     useLocalVoicesQuery,
+    useUpdateVoiceSettingsMutation,
     useUploadVoiceMutation
 } from '@/queries/tts/localVoicesQueries';
 import {
@@ -42,6 +42,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/shared/components/ui/dialog';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
+import { Slider } from '@/shared/components/ui/slider';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
 import { Textarea } from '@/shared/components/ui/textarea';
 import { logger } from '@/shared/utils/prodLogger';
@@ -77,7 +78,7 @@ const PROVIDER_META: Record<LocalTtsProvider, ProviderMeta> = {
         folder: 'nano-qwen3tts-vllm',
         installCommand: 'python -m pip install -r requirements.txt',
         runCommand: 'python api_server.py --host 0.0.0.0 --port 8012',
-        apiKeyHint: 'Поле API ключа пока резервное: текущий upstream Qwen не применяет strict auth contract, как F5.',
+        apiKeyHint: 'Если у self-hosted Qwen worker задан API_KEY, укажите тот же ключ здесь. Для project-hosted worker на localhost:8012 он обязателен.',
         docsUrl: 'https://github.com/calldatfate/nano-qwen3tts-vllm'
     }
 };
@@ -180,6 +181,10 @@ interface Voice {
     samples_count?: number;
     file_path?: string | null;
     is_active?: boolean;
+    created_at?: string | null;
+    reference_text?: string | null;
+    cfg_strength?: number | null;
+    speed_preset?: VoiceSpeedPreset | null;
 }
 
 interface UploadVoiceDraft {
@@ -188,14 +193,70 @@ interface UploadVoiceDraft {
     file: File | null;
 }
 
+type VoiceSpeedPreset = 'very_slow' | 'slow' | 'normal' | 'fast' | 'very_fast';
+
+interface VoiceSettingsDraft {
+    referenceText: string;
+    cfgStrength: number;
+    speedPreset: VoiceSpeedPreset;
+}
+
 const TAB_TRIGGER_CLASS =
     'rounded-none -mb-px border-b-2 border-transparent px-4 py-2 text-sm font-medium text-muted-foreground shadow-none transition-colors hover:text-sky-300 data-[state=active]:border-sky-500 data-[state=active]:bg-transparent data-[state=active]:text-sky-400 data-[state=active]:shadow-none';
 const PROVIDER_SWITCH_TAB_CLASS =
     'appearance-none rounded-none border-0 bg-transparent px-0 pb-2 pt-0 text-sm font-medium text-muted-foreground shadow-none transition-colors hover:text-sky-300 data-[state=active]:bg-transparent data-[state=active]:text-sky-400 data-[state=active]:shadow-[inset_0_-1px_0_0_rgba(14,165,233,1)]';
+const VOICE_CARD_CLASS = 'overflow-hidden rounded-2xl border border-emerald-500/20 bg-emerald-950/10 backdrop-blur-sm shadow-none';
+const SPEED_PRESET_OPTIONS: VoiceSpeedPreset[] = ['very_slow', 'slow', 'normal', 'fast', 'very_fast'];
 
 const MANAGED_TOPOLOGY_LABELS: Record<NonNullable<ProviderContract['managed_topology']>, string> = {
     gateway_managed: 'gateway-managed',
     project_hosted_worker: 'project-hosted worker',
+};
+
+const getVoiceType = (voice: Voice): 'base' | 'custom' => (
+    voice.type === 'base' || voice.voice_type === 'base' ? 'base' : 'custom'
+);
+
+const getVoiceStatusLabel = (voice: Voice): 'Готов' | 'Недоступен' => {
+    if (voice.is_active === false) {
+        return 'Недоступен';
+    }
+    if (getVoiceType(voice) === 'custom' && !voice.file_path) {
+        return 'Недоступен';
+    }
+    return 'Готов';
+};
+
+const getVoiceSubtitle = (voice: Voice): string => {
+    if (voice.file_path) {
+        return 'Референсный файл подключен';
+    }
+    if (voice.language === 'ru') {
+        return 'Русский голос';
+    }
+    if (voice.language === 'en') {
+        return 'English voice';
+    }
+    return getVoiceType(voice) === 'base'
+        ? 'Базовый голос из каталога провайдера'
+        : 'Пользовательский голос готов к использованию';
+};
+
+const getSpeedPresetLabel = (preset: VoiceSpeedPreset): string => {
+    switch (preset) {
+        case 'very_slow':
+            return 'Очень медленный';
+        case 'slow':
+            return 'Медленный';
+        case 'normal':
+            return 'Нормальный';
+        case 'fast':
+            return 'Быстрый';
+        case 'very_fast':
+            return 'Очень быстрый';
+        default:
+            return 'Нормальный';
+    }
 };
 
 const LocalTTSSettingsPage: React.FC = () => {
@@ -226,7 +287,9 @@ const LocalTTSSettingsPage: React.FC = () => {
 
     const canManageVoices = providerContract.supports_local_voice_management !== false;
     const hasSavedConfig = configData?.configured === true;
-    const canOpenVoiceManagement = canManageVoices && testResult?.success === true && hasSavedConfig;
+    const hasHealthyVoiceManagementEndpoint =
+        configData?.healthy === true || configData?.data?.healthy === true || testResult?.success === true;
+    const canOpenVoiceManagement = canManageVoices && hasSavedConfig && hasHealthyVoiceManagementEndpoint;
     const shouldLoadVoices = canOpenVoiceManagement;
     const initializationState = React.useMemo(() => {
         const candidate = statusData?.progress || statusData || healthData;
@@ -263,12 +326,21 @@ const LocalTTSSettingsPage: React.FC = () => {
 
     const uploadVoiceMutation = useUploadVoiceMutation(provider);
     const deleteVoiceMutation = useDeleteVoiceMutation(provider);
+    const updateVoiceSettingsMutation = useUpdateVoiceSettingsMutation(provider);
+    const userVoices = React.useMemo(() => voices.filter((voice) => getVoiceType(voice) === 'custom'), [voices]);
 
     const [isUploadVoiceDialogOpen, setIsUploadVoiceDialogOpen] = useState<boolean>(false);
+    const [isVoiceSettingsDialogOpen, setIsVoiceSettingsDialogOpen] = useState<boolean>(false);
     const [uploadVoiceDraft, setUploadVoiceDraft] = useState<UploadVoiceDraft>({
         name: '',
         sampleText: '',
         file: null,
+    });
+    const [currentVoice, setCurrentVoice] = useState<Voice | null>(null);
+    const [voiceSettingsDraft, setVoiceSettingsDraft] = useState<VoiceSettingsDraft>({
+        referenceText: '',
+        cfgStrength: 3.0,
+        speedPreset: 'normal',
     });
     const uploadingFile = uploadVoiceMutation.isPending;
     const [currentTab, setCurrentTab] = useState<'connection' | 'voices'>('connection');
@@ -278,6 +350,14 @@ const LocalTTSSettingsPage: React.FC = () => {
         setHealthData(null);
         setStatusData(null);
         setCurrentTab('connection');
+        setIsUploadVoiceDialogOpen(false);
+        setIsVoiceSettingsDialogOpen(false);
+        setCurrentVoice(null);
+        setVoiceSettingsDraft({
+            referenceText: '',
+            cfgStrength: 3.0,
+            speedPreset: 'normal',
+        });
         setConfig({
             endpoint_url: providerMeta.defaultEndpoint,
             api_key: '',
@@ -432,6 +512,31 @@ const LocalTTSSettingsPage: React.FC = () => {
         toast.success('Скопировано в буфер обмена');
     };
 
+    const resetUploadVoiceDraft = (): void => {
+        setUploadVoiceDraft({
+            name: '',
+            sampleText: '',
+            file: null,
+        });
+    };
+
+    const openVoiceSettings = (voice: Voice): void => {
+        setCurrentVoice(voice);
+        setVoiceSettingsDraft({
+            referenceText: voice.reference_text || '',
+            cfgStrength: typeof voice.cfg_strength === 'number' ? voice.cfg_strength : 3.0,
+            speedPreset: voice.speed_preset || 'normal',
+        });
+        setIsVoiceSettingsDialogOpen(true);
+    };
+
+    const closeVoiceSettings = (open: boolean): void => {
+        setIsVoiceSettingsDialogOpen(open);
+        if (!open) {
+            setCurrentVoice(null);
+        }
+    };
+
     const uploadVoice = (): void => {
         if (!uploadVoiceDraft.name.trim()) {
             toast.error('Введите название голоса');
@@ -451,11 +556,7 @@ const LocalTTSSettingsPage: React.FC = () => {
             {
                 onSuccess: () => {
                     setIsUploadVoiceDialogOpen(false);
-                    setUploadVoiceDraft({
-                        name: '',
-                        sampleText: '',
-                        file: null,
-                    });
+                    resetUploadVoiceDraft();
                 }
             }
         );
@@ -467,11 +568,106 @@ const LocalTTSSettingsPage: React.FC = () => {
         deleteVoiceMutation.mutate(voiceId);
     };
 
+    const saveVoiceSettings = (): void => {
+        if (!currentVoice) {
+            return;
+        }
+
+        const settings: Record<string, unknown> = {
+            reference_text: voiceSettingsDraft.referenceText.trim() || null,
+        };
+
+        if (provider === 'f5') {
+            settings.cfg_strength = Number(voiceSettingsDraft.cfgStrength.toFixed(1));
+            settings.speed_preset = voiceSettingsDraft.speedPreset;
+        }
+
+        updateVoiceSettingsMutation.mutate(
+            {
+                voiceId: currentVoice.id,
+                settings,
+            },
+            {
+                onSuccess: () => {
+                    closeVoiceSettings(false);
+                },
+            },
+        );
+    };
+
     useEffect(() => {
-        if (testResult?.success && currentTab === 'voices') {
+        if (canOpenVoiceManagement && currentTab === 'voices') {
             refetchVoices();
         }
-    }, [testResult, currentTab, refetchVoices]);
+    }, [canOpenVoiceManagement, currentTab, refetchVoices]);
+
+    const renderVoiceCard = (voice: Voice): React.ReactNode => {
+        const voiceStatus = getVoiceStatusLabel(voice);
+
+        return (
+            <Card key={voice.id} className={`${VOICE_CARD_CLASS} flex min-h-[148px] flex-col`}>
+                <CardHeader className="space-y-2 p-3.5 pb-2">
+                    <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                            <CardTitle className="truncate text-sm font-semibold text-foreground">
+                                {voice.name}
+                            </CardTitle>
+                        </div>
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => deleteVoice(voice.id)}
+                            className="h-8 w-8 shrink-0 p-0 text-red-300 hover:bg-red-500/10 hover:text-red-200"
+                            title="Удалить голос"
+                        >
+                            <Trash2 className="h-4 w-4" />
+                        </Button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline" className="border-emerald-500/15 bg-background/40 text-muted-foreground">
+                            self-hosted
+                        </Badge>
+                        <Badge
+                            variant="outline"
+                            className={voiceStatus === 'Готов'
+                                ? 'border-emerald-400/45 bg-emerald-500/10 text-emerald-300'
+                                : 'border-red-400/45 bg-red-500/10 text-red-300'}
+                        >
+                            {voiceStatus}
+                        </Badge>
+                    </div>
+                    <p className="line-clamp-2 min-h-10 text-xs text-muted-foreground">
+                        {getVoiceSubtitle(voice)}
+                    </p>
+                </CardHeader>
+                <CardContent className="mt-auto px-3.5 pb-3.5 pt-0">
+                    <div className="grid grid-cols-2 gap-1.5">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openVoiceSettings(voice)}
+                            className="h-8 justify-center border-blue-500/35 bg-blue-500/12 text-blue-200 hover:border-blue-400/45 hover:bg-blue-500/16 hover:text-blue-100"
+                        >
+                            <Settings className="h-3.5 w-3.5" />
+                            Настроить
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => deleteVoice(voice.id)}
+                            className="h-8 justify-center border-red-500/35 bg-red-500/10 text-red-200 hover:border-red-400/45 hover:bg-red-500/16 hover:text-red-100"
+                        >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Удалить
+                        </Button>
+                    </div>
+                </CardContent>
+            </Card>
+        );
+    };
 
     if (!isAuthenticated) {
         return (
@@ -631,14 +827,22 @@ const LocalTTSSettingsPage: React.FC = () => {
                             </div>
 
                             <div className="space-y-2">
-                                <Label htmlFor="api_key">API ключ (опционально)</Label>
+                                <Label htmlFor="api_key">
+                                    {provider === 'qwen'
+                                        ? 'API ключ (если у worker задан API_KEY)'
+                                        : 'API ключ (если у сервиса включена авторизация)'}
+                                </Label>
                                 <div className="flex gap-2">
                                     <Input
                                         id="api_key"
                                         type="password"
                                         value={config.api_key}
                                         onChange={(e) => setConfig({ ...config, api_key: e.target.value })}
-                                        placeholder="Введите API ключ, если включена авторизация"
+                                        placeholder={
+                                            provider === 'qwen'
+                                                ? 'Введите API_KEY из .env self-hosted Qwen worker'
+                                                : 'Введите API ключ, если включена авторизация'
+                                        }
                                     />
                                     {config.api_key && (
                                         <Button
@@ -854,7 +1058,7 @@ const LocalTTSSettingsPage: React.FC = () => {
                         </Card>
                     )}
 
-                    {testResult?.success && (
+                    {hasSavedConfig && hasHealthyVoiceManagementEndpoint && (
                         <Card className="card-glass">
                             <CardHeader>
                                 <CardTitle>Режим подключения</CardTitle>
@@ -882,25 +1086,38 @@ const LocalTTSSettingsPage: React.FC = () => {
                     )}
                 </TabsContent>
 
-                <TabsContent value="voices" className="space-y-4">
-                    <Card className="card-glass">
-                        <CardHeader>
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <CardTitle className="flex items-center gap-2">
-                                        <Mic className="w-5 h-5" />
-                                        Управление голосами ({providerMeta.label})
-                                    </CardTitle>
+                <TabsContent value="voices" className="space-y-8">
+                    {loadingVoices ? (
+                        <div className="flex items-center justify-center py-12">
+                            <Loader2 className="h-6 w-6 animate-spin" />
+                        </div>
+                    ) : (
+                        <section className="space-y-4">
+                            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                                <div className="flex items-center gap-2">
+                                    <User className="h-5 w-5 text-sky-400" />
+                                    <h3 className="text-lg font-semibold text-white">Мои голоса (self-hosted)</h3>
+                                    <Badge variant="outline" className="border-sky-500/40 text-sky-400">
+                                        {userVoices.length}
+                                    </Badge>
                                 </div>
-                                {canManageVoices ? (
-                                    <Dialog open={isUploadVoiceDialogOpen} onOpenChange={setIsUploadVoiceDialogOpen}>
+                                {canManageVoices && hasHealthyVoiceManagementEndpoint ? (
+                                    <Dialog
+                                        open={isUploadVoiceDialogOpen}
+                                        onOpenChange={(open) => {
+                                            setIsUploadVoiceDialogOpen(open);
+                                            if (!open) {
+                                                resetUploadVoiceDraft();
+                                            }
+                                        }}
+                                    >
                                         <DialogTrigger asChild>
-                                            <Button variant="ghost" className="flex items-center gap-2 border border-blue-500/30 bg-transparent text-blue-300 hover:bg-blue-500/10 hover:text-sky-300">
-                                                <Upload className="w-4 h-4" />
-                                                Загрузить голос
+                                            <Button variant="outline" className="border-blue-700/40 bg-transparent text-muted-foreground hover:bg-transparent hover:text-blue-400">
+                                                <Upload className="mr-2 h-4 w-4" />
+                                                Загрузить свой голос
                                             </Button>
                                         </DialogTrigger>
-                                        <DialogContent>
+                                        <DialogContent className="max-w-lg">
                                             <DialogHeader>
                                                 <DialogTitle>Загрузка пользовательского голоса</DialogTitle>
                                             </DialogHeader>
@@ -914,13 +1131,16 @@ const LocalTTSSettingsPage: React.FC = () => {
                                                     />
                                                 </div>
                                                 <div>
-                                                    <Label>Текст референса (опционально)</Label>
+                                                    <Label>Текст референса</Label>
                                                     <Textarea
                                                         value={uploadVoiceDraft.sampleText}
                                                         onChange={(e) => setUploadVoiceDraft((prev) => ({ ...prev, sampleText: e.target.value }))}
-                                                        placeholder="Текст, который произносится в референсном аудио"
-                                                        className="h-24"
+                                                        placeholder="Опционально. Текст, который произносится в референсном аудио."
+                                                        className="min-h-[110px]"
                                                     />
+                                                    <p className="mt-1 text-xs text-muted-foreground">
+                                                        Для Qwen это reference_text. Для F5 поле тоже сохраняется вместе с sample.
+                                                    </p>
                                                 </div>
                                                 <div>
                                                     <Label>Аудиофайл *</Label>
@@ -932,7 +1152,14 @@ const LocalTTSSettingsPage: React.FC = () => {
                                                 </div>
                                             </div>
                                             <DialogFooter>
-                                                <Button variant="outline" onClick={() => setIsUploadVoiceDialogOpen(false)} className="border-blue-700 text-blue-300 hover:bg-blue-500/10">
+                                                <Button
+                                                    variant="outline"
+                                                    onClick={() => {
+                                                        setIsUploadVoiceDialogOpen(false);
+                                                        resetUploadVoiceDraft();
+                                                    }}
+                                                    className="border-blue-700 text-blue-300 hover:bg-blue-500/10"
+                                                >
                                                     Отмена
                                                 </Button>
                                                 <Button
@@ -940,7 +1167,7 @@ const LocalTTSSettingsPage: React.FC = () => {
                                                     disabled={uploadingFile || !uploadVoiceDraft.name.trim() || !uploadVoiceDraft.file}
                                                     className="border border-blue-700 bg-blue-700 text-white hover:bg-blue-800"
                                                 >
-                                                    {uploadingFile && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                                                    {uploadingFile && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                                                     Загрузить
                                                 </Button>
                                             </DialogFooter>
@@ -950,79 +1177,124 @@ const LocalTTSSettingsPage: React.FC = () => {
                                     <Badge variant="secondary">CRUD недоступен</Badge>
                                 )}
                             </div>
-                        </CardHeader>
-                        <CardContent>
-                            {loadingVoices ? (
-                                <div className="flex items-center justify-center py-8">
-                                    <Loader2 className="w-6 h-6 animate-spin" />
-                                </div>
-                            ) : voices.length === 0 ? (
-                                <div className="text-center py-8 text-muted-foreground">
-                                    <Mic className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                                    <p>Нет загруженных голосов</p>
+
+                            {userVoices.length === 0 ? (
+                                <div className="rounded-2xl border border-border/70 border-dashed bg-card/55 py-8 text-center">
+                                    <User className="mx-auto mb-3 h-10 w-10 text-slate-500" />
+                                    <p className="mb-2 text-slate-300">У вас пока нет self-hosted голосов</p>
+                                    <p className="text-sm text-slate-500">Подключённый локальный движок позволит загрузить первый sample прямо в этот раздел.</p>
                                 </div>
                             ) : (
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                    {voices.map((voice) => {
-                                        const voiceType = voice.type === 'base' || voice.voice_type === 'base' ? 'base' : 'custom';
-                                        return (
-                                            <Card key={voice.id} className="overflow-hidden border-blue-500/20 bg-[#171d31] shadow-none">
-                                                <CardHeader className="pb-3">
-                                                    <div className="flex items-start justify-between">
-                                                        <div className="flex-1">
-                                                            <CardTitle className="text-base flex items-center gap-2">
-                                                                {voice.name}
-                                                                <Badge variant={voiceType === 'base' ? 'default' : 'secondary'}>
-                                                                    {voiceType === 'base' ? 'Базовый' : 'Свой'}
-                                                                </Badge>
-                                                            </CardTitle>
-                                                            <p className="text-xs text-muted-foreground mt-1">
-                                                                {voice.language === 'ru'
-                                                                    ? 'RU Русский'
-                                                                    : voice.language === 'en'
-                                                                        ? 'EN English'
-                                                                        : voice.file_path
-                                                                            ? 'Референсный файл подключен'
-                                                                            : 'Нет активного файла'}
-                                                            </p>
-                                                        </div>
-                                                        {voiceType === 'custom' && (
-                                                            <Button
-                                                                variant="ghost"
-                                                                size="sm"
-                                                                onClick={() => deleteVoice(voice.id)}
-                                                                className={TABLE_CLASSES.actionButton}
-                                                            >
-                                                                <Trash2 className="w-4 h-4 text-red-400" />
-                                                            </Button>
-                                                        )}
-                                                    </div>
-                                                </CardHeader>
-                                                <CardContent className="space-y-3">
-                                                    <div className="flex items-center justify-between text-sm">
-                                                        <span className="text-muted-foreground">Статус</span>
-                                                        <span className={voice.is_active === false || !voice.file_path ? 'text-red-400' : 'text-blue-300'}>
-                                                            {voice.is_active === false || !voice.file_path ? 'Недоступен' : 'Готов'}
-                                                        </span>
-                                                    </div>
-                                                    {voiceType === 'custom' ? (
-                                                        <p className="text-xs text-muted-foreground">
-                                                            Пользовательский голос сохранён и доступен для выбранного провайдера.
-                                                        </p>
-                                                    ) : (
-                                                        <p className="text-xs text-muted-foreground italic">
-                                                            Базовые голоса только для чтения.
-                                                        </p>
-                                                    )}
-                                                </CardContent>
-                                            </Card>
-                                        );
-                                    })}
+                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+                                    {userVoices.map((voice) => renderVoiceCard(voice))}
                                 </div>
                             )}
-                        </CardContent>
-                    </Card>
+                        </section>
+                    )}
                 </TabsContent>
+
+                <Dialog open={isVoiceSettingsDialogOpen} onOpenChange={closeVoiceSettings}>
+                    <DialogContent className="max-w-xl">
+                        <DialogHeader>
+                            <DialogTitle>{currentVoice ? `Настройки голоса "${currentVoice.name}"` : 'Настройки голоса'}</DialogTitle>
+                        </DialogHeader>
+                        {currentVoice && (
+                            <div className="space-y-5">
+                                <div className="rounded-xl border border-border/70 bg-background/50 px-4 py-3 text-sm text-muted-foreground">
+                                    Настройки будут сохранены вместе с локальным self-hosted голосом.
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="local-reference-text">Референсный текст</Label>
+                                    <Textarea
+                                        id="local-reference-text"
+                                        value={voiceSettingsDraft.referenceText}
+                                        onChange={(e) => setVoiceSettingsDraft((prev) => ({ ...prev, referenceText: e.target.value }))}
+                                        rows={4}
+                                        placeholder="Текст, который произносится в референсном аудио"
+                                    />
+                                </div>
+
+                                {provider === 'f5' ? (
+                                    <>
+                                        <div className="space-y-3">
+                                            <div className="flex items-center justify-between">
+                                                <Label htmlFor="local-cfg-strength">Стабильность синтеза</Label>
+                                                <span className="text-sm font-medium text-blue-300">
+                                                    {voiceSettingsDraft.cfgStrength.toFixed(1)}
+                                                </span>
+                                            </div>
+                                            <Slider
+                                                id="local-cfg-strength"
+                                                min={0.1}
+                                                max={10}
+                                                step={0.1}
+                                                value={[voiceSettingsDraft.cfgStrength]}
+                                                onValueChange={(value) => setVoiceSettingsDraft((prev) => ({ ...prev, cfgStrength: value[0] ?? prev.cfgStrength }))}
+                                            />
+                                        </div>
+
+                                        <div className="space-y-3">
+                                            <div className="flex items-center justify-between">
+                                                <Label htmlFor="local-speed-preset">Скорость речи</Label>
+                                                <span className="text-sm font-medium text-blue-300">
+                                                    {getSpeedPresetLabel(voiceSettingsDraft.speedPreset)}
+                                                </span>
+                                            </div>
+                                            <Slider
+                                                id="local-speed-preset"
+                                                min={0}
+                                                max={SPEED_PRESET_OPTIONS.length - 1}
+                                                step={1}
+                                                value={[SPEED_PRESET_OPTIONS.indexOf(voiceSettingsDraft.speedPreset)]}
+                                                onValueChange={(value) => {
+                                                    const nextPreset = SPEED_PRESET_OPTIONS[value[0] ?? 2] || 'normal';
+                                                    setVoiceSettingsDraft((prev) => ({ ...prev, speedPreset: nextPreset }));
+                                                }}
+                                            />
+                                            <div className="grid grid-cols-5 gap-1 px-1 text-[11px] text-muted-foreground">
+                                                {SPEED_PRESET_OPTIONS.map((preset) => (
+                                                    <span key={preset} className="text-center leading-none">
+                                                        {preset === 'very_slow'
+                                                            ? 'Очень медл.'
+                                                            : preset === 'slow'
+                                                                ? 'Медленно'
+                                                                : preset === 'normal'
+                                                                    ? 'Норма'
+                                                                    : preset === 'fast'
+                                                                        ? 'Быстро'
+                                                                        : 'Очень быстро'}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="rounded-xl border border-border/70 bg-background/50 px-4 py-3 text-sm text-muted-foreground">
+                                        Для self-hosted Qwen здесь используется тот же reference_text, что и в cloud voice management. Дополнительные F5-параметры не применяются.
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        <DialogFooter>
+                            <Button
+                                variant="outline"
+                                onClick={() => closeVoiceSettings(false)}
+                                className="border-blue-700 text-blue-300 hover:bg-blue-500/10"
+                            >
+                                Отмена
+                            </Button>
+                            <Button
+                                onClick={saveVoiceSettings}
+                                disabled={!currentVoice || updateVoiceSettingsMutation.isPending}
+                                className="border border-blue-700 bg-blue-700 text-white hover:bg-blue-800"
+                            >
+                                {updateVoiceSettingsMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                                Сохранить
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
 
             </Tabs>
         </PageWrapper>

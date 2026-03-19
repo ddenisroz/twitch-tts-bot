@@ -28,10 +28,11 @@ Voice/admin CRUD живёт на стороне upstream-провайдера.
 2. `bot_service` отправляет оба заголовка:
    - `Authorization: Bearer <key>`
    - `X-API-Key: <key>`
-3. Managed `qwen` synthesis требует настроенный `TTS_GATEWAY_URL`
-4. Gateway-managed `f5` и proxy-режим `qwen` должны отдавать gateway-hosted `audio_url`, а не прямой provider URL
-5. Qwen voice/admin CRUD использует `QWEN_VOICE_SERVICE_URL`, а если он пуст, fallback идет на `QWEN_TTS_SERVICE_URL`
-6. `local_tts_endpoints` в runtime означают именно пользовательские self-hosted endpoints
+3. Для direct voice/admin вызовов используй provider-specific key (`F5_TTS_SERVICE_API_KEY`, `QWEN_TTS_SERVICE_API_KEY`), а не только `TTS_GATEWAY_API_KEY`
+4. Managed `qwen` synthesis требует настроенный `TTS_GATEWAY_URL`
+5. Gateway-managed `f5` и proxy-режим `qwen` должны отдавать gateway-hosted `audio_url`, а не прямой provider URL
+6. Qwen voice/admin CRUD использует `QWEN_VOICE_SERVICE_URL`, а если он пуст, fallback идет на `QWEN_TTS_SERVICE_URL`
+7. `local_tts_endpoints` в runtime означают именно пользовательские self-hosted endpoints
 
 ## Нужные backend env
 
@@ -45,6 +46,7 @@ F5_TTS_SERVICE_API_KEY=<f5-key>
 QWEN_TTS_SERVICE_URL=http://localhost:8012
 QWEN_TTS_SERVICE_API_KEY=<qwen-key-or-empty>
 QWEN_VOICE_SERVICE_URL=
+QWEN_VOICE_PREVIEW_TIMEOUT_SECONDS=60
 QWEN_ALLOWED_MODELS=
 QWEN_CLOUD_ALLOWED_MODELS=
 
@@ -109,8 +111,14 @@ LOCAL_TTS_ALLOWED_CIDRS=127.0.0.0/8,::1/128
 1. Открой Local TTS settings
 2. Выбери provider `f5` или `qwen`
 3. Сохрани endpoint URL
-4. При необходимости сохрани endpoint API key
+4. Сохрани endpoint API key, если self-hosted worker запущен с auth. Для project-hosted Qwen на `localhost:8012` ключ обязателен.
 5. Переключи нужный provider в `Self-hosted` на основной странице TTS settings
+6. Во вкладке `Управление голосами` local UI показывает self-hosted пользовательские голоса для подключенного endpoint-а
+7. Для self-hosted voices доступен dialog `Настроить`: `reference_text` для обоих provider-ов, а для `f5` ещё `cfg_strength` и `speed_preset`
+
+## Рекомендуемый test asset
+
+- для upload smoke используй [female_1.wav](/H:/Programming/raw_code/AI/Python/TTS_TTV_0.02/female_1.wav)
 
 ## Smoke-checklist
 
@@ -122,3 +130,5 @@ LOCAL_TTS_ALLOWED_CIDRS=127.0.0.0/8,::1/128
 6. Self-hosted Qwen connection checks используют compatibility probe только для synth path
 7. `/api/tts/qwen/models?mode=cloud` показывает runtime-модели managed worker с backend-фильтрацией; рекомендуемый общий env — `QWEN_ALLOWED_MODELS`, backend-only override — `QWEN_CLOUD_ALLOWED_MODELS`
 8. `/api/tts/qwen/models?mode=local` показывает runtime-модели пользовательского endpoint-а без backend-фильтрации
+9. Если Qwen voice CRUD upstream недоступен, backend должен отдавать явный `503`, а не пустые списки голосов
+10. Qwen voice preview/test ждёт warmup дольше обычного preview path; timeout управляется `QWEN_VOICE_PREVIEW_TIMEOUT_SECONDS` и по умолчанию равен `60s`

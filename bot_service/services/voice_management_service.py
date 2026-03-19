@@ -16,6 +16,7 @@ from services.tts.provider_utils import (
 
 logger = logging.getLogger(__name__)
 
+
 class VoiceManagementService:
     """
     Service for managing text-to-speech voices.
@@ -86,6 +87,60 @@ class VoiceManagementService:
             extra_params=extra,
         )
 
+    def _raise_upstream_http_error(
+        self,
+        *,
+        response: httpx.Response,
+        operation: str,
+        default_detail: str,
+    ) -> None:
+        status_code = response.status_code
+        raw_body = (response.text or "").strip()
+        if raw_body:
+            logger.warning(
+                "Voice upstream error during %s: status=%s body=%s",
+                operation,
+                status_code,
+                raw_body[:500],
+            )
+        else:
+            logger.warning("Voice upstream error during %s: status=%s", operation, status_code)
+
+        detail = default_detail
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                detail = (
+                    str(payload.get("detail") or payload.get("message") or payload.get("error") or "").strip()
+                    or default_detail
+                )
+        except Exception:
+            pass
+
+        if status_code in (401, 403):
+            raise HTTPException(status_code=503, detail="TTS service authorization failed")
+
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    def _raise_upstream_transport_error(
+        self,
+        *,
+        error: Exception,
+        operation: str,
+        timeout_detail: str,
+        connect_detail: str,
+    ) -> None:
+        if isinstance(error, httpx.TimeoutException):
+            logger.warning("Voice upstream timeout during %s: %s", operation, error)
+            raise HTTPException(status_code=504, detail=timeout_detail) from error
+
+        if isinstance(error, httpx.RequestError):
+            logger.warning("Voice upstream connection error during %s: %s", operation, error)
+            raise HTTPException(status_code=503, detail=connect_detail) from error
+
+        logger.exception("Voice upstream unexpected failure during %s", operation)
+        raise HTTPException(status_code=500, detail="Internal server error") from error
+
     async def get_global_voices(self, provider: str = "f5") -> List[Dict[str, Any]]:
         """Get list of available global voices from external TTS service."""
         try:
@@ -98,14 +153,20 @@ class VoiceManagementService:
                 
                 if response.status_code == 200:
                     return response.json()
-                else:
-                    logger.error(f"Failed to fetch global voices: {response.status_code}")
-                    return []
+                self._raise_upstream_http_error(
+                    response=response,
+                    operation="fetch global voices",
+                    default_detail="Failed to fetch global voices",
+                )
         except HTTPException:
             raise
-        except Exception:
-            logger.exception("Error fetching global voices")
-            return []
+        except Exception as error:
+            self._raise_upstream_transport_error(
+                error=error,
+                operation="fetch global voices",
+                timeout_detail="TTS voice service timed out",
+                connect_detail="Failed to reach TTS voice service",
+            )
 
     async def get_user_custom_voices(self, user_id: int, provider: str = "f5") -> List[Dict[str, Any]]:
         """Get list of custom voices for a specific user."""
@@ -119,17 +180,22 @@ class VoiceManagementService:
                 
                 if response.status_code == 200:
                     return response.json()
-                elif response.status_code == 404:
+                if response.status_code == 404:
                     return []
-                else:
-                    logger.error(f"Failed to fetch user voices: {response.status_code}")
-                    # Don't fail completely, just return empty list
-                    return []
+                self._raise_upstream_http_error(
+                    response=response,
+                    operation="fetch user voices",
+                    default_detail="Failed to fetch user voices",
+                )
         except HTTPException:
             raise
-        except Exception:
-            logger.exception("Error fetching user voices")
-            return []
+        except Exception as error:
+            self._raise_upstream_transport_error(
+                error=error,
+                operation="fetch user voices",
+                timeout_detail="TTS voice service timed out",
+                connect_detail="Failed to reach TTS voice service",
+            )
 
     async def get_voice_info(self, voice_id: int, provider: str = "f5") -> Optional[Dict[str, Any]]:
         """Get information about a specific voice."""
@@ -144,6 +210,13 @@ class VoiceManagementService:
                 )
                 if response.status_code == 200:
                     return response.json()
+                if response.status_code == 404:
+                    return None
+                self._raise_upstream_http_error(
+                    response=response,
+                    operation="fetch voice info",
+                    default_detail="Failed to fetch voice info",
+                )
                 return None
         except httpx.TimeoutException as error:
             logger.warning(
@@ -158,11 +231,19 @@ class VoiceManagementService:
                     detail="Qwen voice service is busy warming up. Try the preview again in a few seconds.",
                 ) from error
             raise HTTPException(status_code=504, detail="Voice service timed out") from error
+        except httpx.RequestError as error:
+            logger.warning(
+                "Voice info request connection error provider=%s voice_id=%s error=%s",
+                normalized_provider,
+                voice_id,
+                error,
+            )
+            raise HTTPException(status_code=503, detail="Failed to reach TTS voice service") from error
         except HTTPException:
             raise
-        except Exception:
+        except Exception as error:
             logger.exception("Error checking voice existence")
-            return None
+            raise HTTPException(status_code=500, detail="Internal server error") from error
 
     async def update_user_voice_settings(
         self, 
@@ -219,13 +300,11 @@ class VoiceManagementService:
                     
                     if response.status_code == 200:
                         return response.json()
-                    else:
-                        error_detail = "Failed to update custom voice settings"
-                        try:
-                            error_detail = response.json().get('detail', error_detail)
-                        except Exception:
-                            pass
-                        raise HTTPException(status_code=response.status_code, detail=error_detail)
+                    self._raise_upstream_http_error(
+                        response=response,
+                        operation="update custom voice settings",
+                        default_detail="Failed to update custom voice settings",
+                    )
             except HTTPException:
                 raise
             except Exception:
@@ -347,8 +426,11 @@ class VoiceManagementService:
             if response.status_code == 404:
                 raise HTTPException(status_code=404, detail="Voice not found")
 
-            logger.error(f"Failed to delete custom voice: {response.status_code}")
-            return False
+            self._raise_upstream_http_error(
+                response=response,
+                operation="delete custom voice",
+                default_detail="Failed to delete custom voice",
+            )
         except HTTPException:
             raise
         except Exception:
@@ -366,12 +448,22 @@ class VoiceManagementService:
                 )
                 if response.status_code == 200:
                     return response.json()
-                return []
+                if response.status_code == 404:
+                    return []
+                self._raise_upstream_http_error(
+                    response=response,
+                    operation="fetch admin global voices",
+                    default_detail="Failed to fetch admin global voices",
+                )
         except HTTPException:
             raise
-        except Exception:
-            logger.exception("Error fetching admin global voices")
-            return []
+        except Exception as error:
+            self._raise_upstream_transport_error(
+                error=error,
+                operation="fetch admin global voices",
+                timeout_detail="TTS voice service timed out",
+                connect_detail="Failed to reach TTS voice service",
+            )
 
     async def admin_update_global_voice(
         self,
@@ -390,7 +482,11 @@ class VoiceManagementService:
                 )
                 if response.status_code == 200:
                     return response.json()
-                raise HTTPException(status_code=response.status_code, detail="Failed to update voice")
+                self._raise_upstream_http_error(
+                    response=response,
+                    operation="update global voice",
+                    default_detail="Failed to update voice",
+                )
         except HTTPException:
             raise
         except Exception:
@@ -408,7 +504,11 @@ class VoiceManagementService:
                 )
                 if response.status_code == 200:
                     return True
-                raise HTTPException(status_code=response.status_code, detail="Failed to delete voice")
+                self._raise_upstream_http_error(
+                    response=response,
+                    operation="delete global voice",
+                    default_detail="Failed to delete voice",
+                )
         except HTTPException:
             raise
         except Exception:
@@ -426,7 +526,11 @@ class VoiceManagementService:
                 )
                 if response.status_code == 200:
                     return True
-                raise HTTPException(status_code=response.status_code, detail="Failed to rename voice")
+                self._raise_upstream_http_error(
+                    response=response,
+                    operation="rename global voice",
+                    default_detail="Failed to rename voice",
+                )
         except HTTPException:
             raise
         except Exception:
@@ -468,7 +572,11 @@ class VoiceManagementService:
                 response.status_code,
                 (response.text or "")[:500],
             )
-            raise HTTPException(status_code=response.status_code, detail="Failed to upload voice")
+            self._raise_upstream_http_error(
+                response=response,
+                operation="upload global voice",
+                default_detail="Failed to upload voice",
+            )
         except httpx.TimeoutException as error:
             logger.warning(
                 "Admin upload voice timed out provider=%s timeout=%ss",
@@ -498,7 +606,11 @@ class VoiceManagementService:
                 )
                 if response.status_code == 200:
                     return response.json()
-                raise HTTPException(status_code=response.status_code, detail="Failed to retranscribe voice")
+                self._raise_upstream_http_error(
+                    response=response,
+                    operation="retranscribe global voice",
+                    default_detail="Failed to retranscribe voice",
+                )
         except HTTPException:
             raise
         except Exception:
@@ -516,7 +628,11 @@ class VoiceManagementService:
                 )
                 if response.status_code == 200:
                     return response.json()
-                raise HTTPException(status_code=response.status_code, detail="Failed to toggle voice")
+                self._raise_upstream_http_error(
+                    response=response,
+                    operation="toggle global voice",
+                    default_detail="Failed to toggle voice",
+                )
         except HTTPException:
             raise
         except Exception:
@@ -534,7 +650,11 @@ class VoiceManagementService:
                 )
                 if response.status_code == 200:
                     return response.json()
-                raise HTTPException(status_code=response.status_code, detail="Failed to load stats")
+                self._raise_upstream_http_error(
+                    response=response,
+                    operation="load voice stats",
+                    default_detail="Failed to load stats",
+                )
         except HTTPException:
             raise
         except Exception:

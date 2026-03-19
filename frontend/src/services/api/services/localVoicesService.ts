@@ -16,6 +16,9 @@ export interface LocalVoice {
     file_path?: string | null;
     is_active?: boolean;
     created_at?: string;
+    reference_text?: string | null;
+    cfg_strength?: number | null;
+    speed_preset?: 'very_slow' | 'slow' | 'normal' | 'fast' | 'very_fast' | null;
 }
 
 interface LocalVoicesResponse {
@@ -32,6 +35,11 @@ export interface UploadVoiceData {
 interface UploadVoiceResponse {
     success: boolean;
     message?: string;
+    voice?: LocalVoice | null;
+}
+
+interface UpdateVoiceSettingsResponse {
+    success: boolean;
     voice?: LocalVoice | null;
 }
 
@@ -79,6 +87,17 @@ export const localVoicesService = {
         await apiClient.delete(`/api/local-tts/voices/${voiceId}`, {
             params: { provider },
         });
+    },
+
+    async updateVoiceSettings(
+        provider: LocalTtsProvider,
+        voiceId: number,
+        settings: Record<string, unknown>,
+    ): Promise<LocalVoice | null> {
+        const response = await apiClient.put<UpdateVoiceSettingsResponse>(`/api/local-tts/voices/${voiceId}/settings`, settings, {
+            params: { provider },
+        });
+        return response.data.voice ? normalizeVoice(response.data.voice) : null;
     },
 };
 

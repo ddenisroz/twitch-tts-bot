@@ -35,7 +35,10 @@ logger = logging.getLogger('bot_service')
 voices_router = APIRouter(prefix='/api/voices', tags=['voices'])
 user_voices_router = APIRouter(prefix='/api/user/voices', tags=['user_voices'])
 
-QWEN_VOICE_PREVIEW_TIMEOUT_SECONDS = 30.0
+QWEN_VOICE_PREVIEW_TIMEOUT_SECONDS = max(
+    30.0,
+    float(getattr(settings, "qwen_voice_preview_timeout_seconds", 60.0)),
+)
 
 class VoiceSchema(BaseModel):
     id: int
@@ -101,6 +104,41 @@ def _provider_base_url(provider: str) -> str:
 def _provider_upstream_params(provider: str, extra_params: Optional[dict] = None) -> dict:
     resolved_provider = _normalize_voice_provider(provider)
     return get_voice_management_upstream_params(resolved_provider, extra_params=extra_params)
+
+
+def _raise_tts_upstream_error(
+    response: httpx.Response,
+    *,
+    operation: str,
+    default_detail: str,
+) -> None:
+    status_code = response.status_code
+    raw_body = (response.text or "").strip()
+    if raw_body:
+        logger.warning(
+            "TTS upstream error during %s: status=%s body=%s",
+            operation,
+            status_code,
+            raw_body[:500],
+        )
+    else:
+        logger.warning("TTS upstream error during %s: status=%s", operation, status_code)
+
+    detail = default_detail
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            detail = (
+                str(payload.get("detail") or payload.get("message") or payload.get("error") or "").strip()
+                or default_detail
+            )
+    except Exception:
+        pass
+
+    if status_code in (401, 403):
+        raise HTTPException(status_code=503, detail="TTS service authorization failed")
+
+    raise HTTPException(status_code=status_code, detail=detail)
 
 
 def _guess_audio_suffix(*, audio_url: str, content_type: Optional[str]) -> str:
@@ -298,8 +336,11 @@ async def get_user_enabled_voices(user_id: int, user: dict=Depends(get_current_u
             )
         if response.status_code == 200:
             return response.json()
-        else:
-            raise HTTPException(status_code=response.status_code, detail='Operation is not permitted.')
+        _raise_tts_upstream_error(
+            response,
+            operation='get enabled voices',
+            default_detail='Failed to fetch enabled voices.',
+        )
     except HTTPException:
         raise
     except Exception:
@@ -323,8 +364,11 @@ async def update_user_enabled_voices(user_id: int, voice_ids: List[int], user: d
             )
         if response.status_code == 200:
             return response.json()
-        else:
-            raise HTTPException(status_code=response.status_code, detail='Operation is not permitted.')
+        _raise_tts_upstream_error(
+            response,
+            operation='update enabled voices',
+            default_detail='Failed to update enabled voices.',
+        )
     except HTTPException:
         raise
     except Exception:
@@ -448,7 +492,11 @@ async def test_voice(voice_id: int, payload: dict=Body(default={}), current_user
             detail = response.json().get('detail', detail)
         except Exception:
             pass
-        raise HTTPException(status_code=response.status_code, detail=detail)
+        _raise_tts_upstream_error(
+            response,
+            operation='test voice',
+            default_detail=detail,
+        )
     except httpx.TimeoutException as error:
         if resolved_provider == 'qwen':
             logger.warning(
@@ -496,7 +544,11 @@ async def rename_user_voice(voice_id: int, payload: dict=Body(default={}), curre
             detail = response.json().get('detail', detail)
         except Exception:
             pass
-        raise HTTPException(status_code=response.status_code, detail=detail)
+        _raise_tts_upstream_error(
+            response,
+            operation='rename user voice',
+            default_detail=detail,
+        )
     except HTTPException:
         raise
     except Exception:
@@ -526,7 +578,11 @@ async def retranscribe_user_voice(voice_id: int, payload: dict=Body(default={}),
             detail = response.json().get('detail', detail)
         except Exception:
             pass
-        raise HTTPException(status_code=response.status_code, detail=detail)
+        _raise_tts_upstream_error(
+            response,
+            operation='retranscribe user voice',
+            default_detail=detail,
+        )
     except HTTPException:
         raise
     except Exception:
@@ -610,7 +666,11 @@ async def admin_transcribe_global_voice(voice_id: int, current_user: dict=Depend
             detail = response.json().get('detail', detail)
         except Exception:
             pass
-        raise HTTPException(status_code=response.status_code, detail=detail)
+        _raise_tts_upstream_error(
+            response,
+            operation='transcribe global voice',
+            default_detail=detail,
+        )
     except HTTPException:
         raise
     except Exception:
@@ -636,7 +696,11 @@ async def admin_retranscribe_global_voice(voice_id: int, current_user: dict=Depe
             detail = response.json().get('detail', detail)
         except Exception:
             pass
-        raise HTTPException(status_code=response.status_code, detail=detail)
+        _raise_tts_upstream_error(
+            response,
+            operation='retranscribe global voice',
+            default_detail=detail,
+        )
     except HTTPException:
         raise
     except Exception:

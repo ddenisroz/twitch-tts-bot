@@ -34,6 +34,8 @@ def test_build_tts_auth_headers_gateway_missing_key_raises(monkeypatch):
 def test_build_tts_auth_headers_provider_f5_strict(monkeypatch):
     monkeypatch.setattr(internal_service_auth.settings, "tts_gateway_url", "")
     monkeypatch.setattr(internal_service_auth.settings, "f5_tts_service_api_key", "f5-key")
+    monkeypatch.setattr(internal_service_auth.settings, "tts_internal_api_key", "shared-key")
+    monkeypatch.setattr(internal_service_auth.settings, "tts_gateway_api_key", "gateway-key")
 
     headers = internal_service_auth.build_tts_auth_headers(
         provider="f5",
@@ -48,8 +50,8 @@ def test_build_tts_auth_headers_provider_f5_strict(monkeypatch):
 def test_build_tts_auth_headers_provider_qwen_strict(monkeypatch):
     monkeypatch.setattr(internal_service_auth.settings, "tts_gateway_url", "")
     monkeypatch.setattr(internal_service_auth.settings, "qwen_tts_service_api_key", "qwen-key")
-    monkeypatch.setattr(internal_service_auth.settings, "tts_internal_api_key", "")
-    monkeypatch.setattr(internal_service_auth.settings, "tts_gateway_api_key", "")
+    monkeypatch.setattr(internal_service_auth.settings, "tts_internal_api_key", "shared-key")
+    monkeypatch.setattr(internal_service_auth.settings, "tts_gateway_api_key", "gateway-key")
 
     headers = internal_service_auth.build_tts_auth_headers(
         provider="qwen",
@@ -61,11 +63,11 @@ def test_build_tts_auth_headers_provider_qwen_strict(monkeypatch):
     assert headers["X-API-Key"] == "qwen-key"
 
 
-def test_build_tts_auth_headers_provider_qwen_falls_back_to_shared_key(monkeypatch):
+def test_build_tts_auth_headers_provider_qwen_falls_back_to_shared_key(monkeypatch, caplog):
     monkeypatch.setattr(internal_service_auth.settings, "tts_gateway_url", "")
     monkeypatch.setattr(internal_service_auth.settings, "qwen_tts_service_api_key", "")
     monkeypatch.setattr(internal_service_auth.settings, "tts_internal_api_key", "shared-key")
-    monkeypatch.setattr(internal_service_auth.settings, "tts_gateway_api_key", "")
+    monkeypatch.setattr(internal_service_auth.settings, "tts_gateway_api_key", "gateway-key")
 
     headers = internal_service_auth.build_tts_auth_headers(
         provider="qwen",
@@ -75,9 +77,10 @@ def test_build_tts_auth_headers_provider_qwen_falls_back_to_shared_key(monkeypat
 
     assert headers["Authorization"] == "Bearer shared-key"
     assert headers["X-API-Key"] == "shared-key"
+    assert "fell back to TTS_GATEWAY_API_KEY" not in caplog.text
 
 
-def test_build_tts_auth_headers_provider_f5_falls_back_to_gateway_key(monkeypatch):
+def test_build_tts_auth_headers_provider_f5_falls_back_to_gateway_key(monkeypatch, caplog):
     monkeypatch.setattr(internal_service_auth.settings, "tts_gateway_url", "")
     monkeypatch.setattr(internal_service_auth.settings, "f5_tts_service_api_key", "")
     monkeypatch.setattr(internal_service_auth.settings, "tts_internal_api_key", "")
@@ -91,6 +94,26 @@ def test_build_tts_auth_headers_provider_f5_falls_back_to_gateway_key(monkeypatc
 
     assert headers["Authorization"] == "Bearer gateway-key"
     assert headers["X-API-Key"] == "gateway-key"
+    assert "fell back to TTS_GATEWAY_API_KEY" in caplog.text
+    assert "F5_TTS_SERVICE_API_KEY" in caplog.text
+
+
+def test_build_tts_auth_headers_provider_qwen_falls_back_to_gateway_key_logs_warning(monkeypatch, caplog):
+    monkeypatch.setattr(internal_service_auth.settings, "tts_gateway_url", "")
+    monkeypatch.setattr(internal_service_auth.settings, "qwen_tts_service_api_key", "")
+    monkeypatch.setattr(internal_service_auth.settings, "tts_internal_api_key", "")
+    monkeypatch.setattr(internal_service_auth.settings, "tts_gateway_api_key", "gateway-key")
+
+    headers = internal_service_auth.build_tts_auth_headers(
+        provider="qwen",
+        upstream="voice",
+        strict=True,
+    )
+
+    assert headers["Authorization"] == "Bearer gateway-key"
+    assert headers["X-API-Key"] == "gateway-key"
+    assert "fell back to TTS_GATEWAY_API_KEY" in caplog.text
+    assert "QWEN_TTS_SERVICE_API_KEY" in caplog.text
 
 
 def test_build_tts_auth_headers_local_with_saved_key():

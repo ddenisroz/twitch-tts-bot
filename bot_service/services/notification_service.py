@@ -1,6 +1,7 @@
 import logging
 import json
 import asyncio
+import re
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 import uuid
@@ -15,6 +16,7 @@ from services.memory_websocket_manager import get_memory_websocket_manager
 from constants import TTS_DEFAULT_VOLUME
 
 logger = logging.getLogger('bot_service.notifications')
+_INTERNAL_USER_CHANNEL_RE = re.compile(r"^user_(\d+)$")
 
 class NotificationService:
     """
@@ -83,10 +85,21 @@ class NotificationService:
     ) -> bool:
         """Broadcast TTS audio event."""
         try:
+            audio_url = str(audio_data.get("audio_url") or "").strip()
+            if not audio_url:
+                logger.error(
+                    "[TTS] Skip broadcast without audio_url channel=%s platform=%s trace_id=%s source_message_id=%s",
+                    channel_name,
+                    platform,
+                    audio_data.get("trace_id"),
+                    audio_data.get("source_message_id"),
+                )
+                return False
+
             tts_event = {
                 "type": "tts_audio",
                 "data": {
-                    "audio_url": audio_data.get("audio_url"),
+                    "audio_url": audio_url,
                     "voice": audio_data.get("voice", "unknown"),
                     "volume": audio_data.get("volume", TTS_DEFAULT_VOLUME),
                     "tts_type": audio_data.get("tts_type", "unknown"),
@@ -222,15 +235,20 @@ class NotificationService:
         try:
             user_repo = UserRepository(db)
             user: Optional[User] = None
+            internal_match = _INTERNAL_USER_CHANNEL_RE.match((channel_name or "").strip())
 
-            if platform == "twitch":
+            if internal_match:
+                user = user_repo.get_by_id(int(internal_match.group(1)))
+
+            if not user and platform == "twitch":
                 user = user_repo.get_by_twitch_username(channel_name)
-            elif platform == "vk":
+            elif not user and platform == "vk":
                 user = user_repo.get_by_vk_channel_name(channel_name)
                 if not user:
                     user = db.query(User).filter(func.lower(User.vk_username) == channel_name.lower()).first()
             else:
-                return None, "website"
+                if not user:
+                    return None, "website"
 
             if not user:
                 return None, "website"

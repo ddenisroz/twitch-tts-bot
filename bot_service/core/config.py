@@ -73,6 +73,13 @@ class Settings(BaseSettings):
         default="",
         description="Optional dedicated Qwen voice-management API URL; when empty bot_service falls back to qwen_tts_service_url",
     )
+    qwen_voice_preview_timeout_seconds: float = Field(
+        default=60.0,
+        description=(
+            "Timeout in seconds for Qwen voice preview/test calls before bot_service returns "
+            "a readable warmup/model-loading error"
+        ),
+    )
     qwen_cloud_allowed_models: str = Field(
         default=os.getenv(
             "QWEN_CLOUD_ALLOWED_MODELS",

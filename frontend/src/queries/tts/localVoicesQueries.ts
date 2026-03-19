@@ -61,3 +61,19 @@ export const useDeleteVoiceMutation = (provider: LocalTtsProvider) => {
         },
     });
 };
+
+export const useUpdateVoiceSettingsMutation = (provider: LocalTtsProvider) => {
+    const queryClient = useQueryClient();
+
+    return useMutation<LocalVoice | null, AxiosError<{ detail?: string }>, { voiceId: number; settings: Record<string, unknown> }>({
+        mutationFn: ({ voiceId, settings }) => localVoicesService.updateVoiceSettings(provider, voiceId, settings),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: localVoicesKeys.list(provider) });
+            toast.success('Voice settings saved');
+        },
+        onError: (error) => {
+            logger.error('Error updating local voice settings:', error);
+            toast.error(error.response?.data?.detail || 'Failed to save voice settings');
+        },
+    });
+};

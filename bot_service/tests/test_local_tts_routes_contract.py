@@ -161,3 +161,69 @@ async def test_toggle_local_tts_updates_provider_mode_and_mirrors_compat_flag(mo
     assert result["use_local"] is True
     assert captured["user_id"] == 1
     assert captured["qwen_mode"] == "local"
+
+
+@pytest.mark.asyncio
+async def test_update_local_tts_voice_settings_proxies_payload(monkeypatch):
+    class _Config:
+        endpoint_url = "http://localhost:8011"
+        api_key = "local-key"
+
+    class DummyRepo:
+        def __init__(self, _db):
+            pass
+
+        def get_by_user_id(self, _user_id, provider=None):
+            assert provider == "f5"
+            return _Config()
+
+    class DummyResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"voice": {"id": 42, "reference_text": "пример", "cfg_strength": 2.5, "speed_preset": "fast"}}
+
+    captured: dict = {}
+
+    class DummyAsyncClient:
+        def __init__(self, timeout):
+            captured["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def put(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return DummyResponse()
+
+    monkeypatch.setattr(tts_local_routes, "LocalTTSRepository", DummyRepo)
+    monkeypatch.setattr(tts_local_routes.httpx, "AsyncClient", DummyAsyncClient)
+
+    result = await tts_local_routes.update_local_tts_voice_settings(
+        voice_id=42,
+        settings_data={
+            "reference_text": "пример",
+            "cfg_strength": 2.5,
+            "speed_preset": "fast",
+            "ignored": "value",
+        },
+        provider="f5",
+        user={"id": 1},
+        db=object(),
+    )
+
+    assert captured["url"] == "http://localhost:8011/api/tts/user/voices/42/settings"
+    assert captured["headers"]["Authorization"] == "Bearer local-key"
+    assert captured["json"] == {
+        "reference_text": "пример",
+        "cfg_strength": 2.5,
+        "speed_preset": "fast",
+    }
+    assert result["success"] is True
+    assert result["voice"]["reference_text"] == "пример"

@@ -106,6 +106,8 @@ Contribute with small, focused changes. If behavior changes, update the docs in 
 - Managed Qwen model catalog may be backend-filtered by `QWEN_CLOUD_ALLOWED_MODELS`; self-hosted Qwen model catalogs must continue to reflect the connected user endpoint as-is.
 - Qwen voice management now includes admin/global routes in the upstream contract; admin UI gating should use provider capability `voice_admin`.
 - Qwen voice preview/test should fail fast with a readable warmup/model-loading message; admin/user preview flows must not sit in multi-minute pending state.
+- If F5/Qwen voice CRUD upstreams are unreachable, backend voice-management routes should surface `503` instead of silently returning empty voice lists.
+- Qwen voice preview/test timeout is backend-configurable via `QWEN_VOICE_PREVIEW_TIMEOUT_SECONDS` and defaults to `60s`.
 - TTS/YouTube autoplay must not resume automatically after full page reload; explicit user action is required to start playback again.
 - Audio priority controls were removed; TTS no longer pauses/resumes YouTube automatically.
 - YouTube queue bans set queue items to `status='banned'` and prevent re-adding the same video via `/api/youtube/queue/ban/{queue_id}`.

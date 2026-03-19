@@ -735,11 +735,29 @@ class TTSManager:
         result_payload: Dict[str, Any],
         volume_level: float,
     ) -> Dict[str, Any]:
+        if result_payload.get("success") is False:
+            upstream_error = str(
+                result_payload.get("error")
+                or result_payload.get("detail")
+                or "Provider returned unsuccessful payload"
+            ).strip()
+            raise RuntimeError(
+                f"Provider returned unsuccessful payload provider={provider} error={upstream_error}"
+            )
+
+        raw_audio_url = str(result_payload.get("audio_url") or "").strip()
+        if not raw_audio_url:
+            upstream_error = str(result_payload.get("error") or result_payload.get("detail") or "").strip()
+            raise RuntimeError(
+                "Provider success payload missing audio_url "
+                f"provider={provider} error={upstream_error or '-'} keys={sorted(result_payload.keys())}"
+            )
+
         selected_voice = result_payload.get("selected_voice") or result_payload.get("voice")
         localized_audio = await self._materialize_provider_audio(
             session=session,
             provider=provider,
-            audio_url=result_payload.get("audio_url"),
+            audio_url=raw_audio_url,
             endpoint=endpoint,
             headers=headers,
         )
@@ -1132,6 +1150,25 @@ class TTSManager:
                         }
 
                     result = await response.json()
+                    if isinstance(result, dict) and result.get("success") is False:
+                        upstream_error = str(
+                            result.get("error")
+                            or result.get("detail")
+                            or "Provider returned unsuccessful payload"
+                        ).strip()
+                        logger.error(
+                            "[ERROR] Provider returned unsuccessful payload provider=%s trace_id=%s source_message_id=%s error=%s body=%s",
+                            normalized_provider,
+                            trace_id or "-",
+                            source_message_id or "-",
+                            upstream_error,
+                            result,
+                        )
+                        return {
+                            "success": False,
+                            "error": upstream_error or "Provider returned unsuccessful payload",
+                        }
+
                     provider_result = await self._build_provider_success_result(
                         session=session,
                         provider=normalized_provider,

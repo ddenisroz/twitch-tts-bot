@@ -51,6 +51,7 @@ async def test_synthesize_success(tts_service):
     assert result["success"] is True
     assert result["task_id"] == "task-123"
     mock_queue.add_task.assert_called_once()
+    assert mock_queue.add_task.await_args.kwargs["user_id"] == 1
 
 
 @pytest.mark.asyncio

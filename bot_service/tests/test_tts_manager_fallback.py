@@ -340,6 +340,74 @@ async def test_get_user_tts_endpoint_returns_saved_api_key(manager, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_build_provider_success_result_raises_when_audio_url_missing(manager):
+    class _FakeSession:
+        pass
+
+    with pytest.raises(RuntimeError, match="missing audio_url"):
+        await manager._build_provider_success_result(
+            session=_FakeSession(),
+            provider="f5",
+            endpoint="http://gateway",
+            headers={},
+            tts_type="ai_f5",
+            result_payload={"selected_voice": "female_1", "duration": 1.5},
+            volume_level=50.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_via_tts_service_rejects_unsuccessful_provider_payload(manager, monkeypatch):
+    class _FakeResponse:
+        def __init__(self, status: int, payload: dict):
+            self.status = status
+            self._payload = payload
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def json(self):
+            return self._payload
+
+        async def text(self):
+            return str(self._payload)
+
+    class _FakeClientSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url: str, **kwargs):
+            _ = (url, kwargs)
+            return _FakeResponse(200, {"success": False, "error": "worker failed"})
+
+    monkeypatch.setattr(
+        "services.tts.tts_manager.aiohttp.ClientSession",
+        lambda timeout=None: _FakeClientSession(),
+    )
+    monkeypatch.setattr("services.tts.provider_utils.settings.tts_gateway_url", "http://gateway")
+    monkeypatch.setattr("core.internal_service_auth.settings.tts_gateway_url", "http://gateway")
+    monkeypatch.setattr("core.internal_service_auth.settings.tts_gateway_api_key", "gateway-key")
+
+    result = await manager._synthesize_via_tts_service(
+        channel_name="chan",
+        text="hello",
+        author="tester",
+        user_id=1,
+        volume_level=50.0,
+        provider="f5",
+        tts_settings={"advanced_provider": "f5", "voice": "female_1"},
+    )
+
+    assert result == {"success": False, "error": "worker failed"}
+
+
+@pytest.mark.asyncio
 async def test_qwen_local_health_check_uses_compat_probe(manager, monkeypatch):
     calls: list[str] = []
 

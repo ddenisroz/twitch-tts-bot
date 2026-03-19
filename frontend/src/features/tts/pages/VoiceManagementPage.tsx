@@ -72,8 +72,8 @@ interface TestVoiceResponse {
 type VoiceProvider = 'f5' | 'qwen';
 
 const PROVIDER_TAB_CLASS =
-    'appearance-none rounded-none border-0 bg-transparent px-4 pb-3 pt-2 text-sm font-medium shadow-none transition-colors';
-const PROVIDER_TAB_ACTIVE_CLASS = 'text-sky-400 shadow-[inset_0_-2px_0_0_rgba(56,189,248,1)]';
+    'inline-flex items-center -mb-px appearance-none rounded-none border-b-2 border-transparent bg-transparent px-4 pb-3 pt-2 text-sm font-medium transition-colors';
+const PROVIDER_TAB_ACTIVE_CLASS = 'border-b-sky-400 text-sky-400';
 const PROVIDER_TAB_INACTIVE_CLASS = 'text-muted-foreground hover:text-sky-300';
 const SURFACE_CARD_CLASS = 'card-glass border-border/70 bg-card/75 backdrop-blur-sm shadow-none';
 const VOICE_CARD_CLASS = 'overflow-hidden rounded-2xl border border-emerald-500/20 bg-emerald-950/10 backdrop-blur-sm shadow-none';
@@ -318,18 +318,18 @@ const VoiceManagementPageContent: React.FC = () => {
         }
     });
 
-    const { data: enabledVoicesData, isLoading: _enabledVoicesLoading } = useQuery<number[]>({
+    const {
+        data: enabledVoicesData,
+        isLoading: _enabledVoicesLoading,
+        isError: enabledVoicesError,
+        error: enabledVoicesErrorData,
+    } = useQuery<number[]>({
         queryKey: ['enabled-voices', userId, voiceProvider],
         queryFn: async () => {
             if (!userId) return [];
-            try {
-                const response = await ttsService.getEnabledVoices(userId, voiceProvider);
-                const enabledResponse = response.data as EnabledVoicesResponse;
-                return enabledResponse.enabled_voice_ids || [];
-            } catch (error: unknown) {
-                logger.error('Error loading enabled voices:', error);
-                return [];
-            }
+            const response = await ttsService.getEnabledVoices(userId, voiceProvider);
+            const enabledResponse = response.data as EnabledVoicesResponse;
+            return enabledResponse.enabled_voice_ids || [];
         },
         enabled: !!userId && !!whitelistStatus?.can_manage_voices,
         staleTime: 5 * 60 * 1000,
@@ -356,9 +356,16 @@ const VoiceManagementPageContent: React.FC = () => {
     const voicesServiceErrorMessage =
         extractApiErrorMessage(globalVoicesErrorData) ||
         extractApiErrorMessage(userVoicesErrorData) ||
+        extractApiErrorMessage(enabledVoicesErrorData) ||
         'Сервис голосов временно недоступен';
-    const hasVoicesServiceError = globalVoicesError || userVoicesError;
+    const hasVoicesServiceError = globalVoicesError || userVoicesError || enabledVoicesError;
     const shownVoiceServiceErrorRef = React.useRef<string | null>(null);
+
+    useEffect(() => {
+        if (enabledVoicesError && enabledVoicesErrorData) {
+            logger.error('Error loading enabled voices:', enabledVoicesErrorData);
+        }
+    }, [enabledVoicesError, enabledVoicesErrorData]);
 
     useEffect(() => {
         if (!hasVoicesServiceError) {
@@ -922,6 +929,7 @@ const VoiceManagementPageContent: React.FC = () => {
                         onClick={() => {
                             queryClient.invalidateQueries({ queryKey: ['global-voices', voiceProvider] });
                             queryClient.invalidateQueries({ queryKey: ['user-voices', userId, voiceProvider] });
+                            queryClient.invalidateQueries({ queryKey: ['enabled-voices', userId, voiceProvider] });
                         }}
                         className="border-red-400/50 text-red-200 hover:text-white hover:bg-red-500/20"
                     >
@@ -1230,10 +1238,6 @@ const VoiceManagementPageContent: React.FC = () => {
                                 </div>
                             )}
                         </div>
-                    )}
-
-                    {whitelistStatus?.can_manage_voices && (
-                        <div className={SECTION_DIVIDER_CLASS} />
                     )}
 
                     {whitelistStatus?.can_manage_voices && (

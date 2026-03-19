@@ -7,7 +7,7 @@ import logging
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from auth.auth import get_current_user
@@ -550,6 +550,58 @@ async def delete_local_tts_voice(
         raise HTTPException(status_code=502, detail="Failed to reach local TTS endpoint")
     except Exception:
         logger.exception("Error deleting local voice")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@local_tts_router.put("/voices/{voice_id}/settings")
+async def update_local_tts_voice_settings(
+    voice_id: int,
+    settings_data: dict[str, Any] = Body(...),
+    provider: str = Query("f5"),
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    resolved_provider = _normalize_local_provider(provider)
+    user_id = _require_authenticated_user_id(user)
+    provider_contract = _provider_contract(resolved_provider)
+
+    if not provider_contract["supports_local_voice_management"]:
+        raise HTTPException(status_code=501, detail="Voice management is not available for this provider")
+
+    repo = LocalTTSRepository(db)
+    config = _get_local_config_or_404(repo=repo, user_id=user_id, provider=resolved_provider)
+    endpoint = normalize_local_tts_endpoint_url(config.endpoint_url)
+    headers = _build_local_headers(resolved_provider, config.api_key)
+
+    allowed_keys = {"reference_text", "cfg_strength", "speed_preset"}
+    payload = {key: value for key, value in settings_data.items() if key in allowed_keys}
+    if not payload:
+        raise HTTPException(status_code=400, detail="No supported voice settings were provided")
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.put(
+                f"{endpoint}/api/tts/user/voices/{voice_id}/settings",
+                headers=headers,
+                json=payload,
+            )
+        if response.status_code != 200:
+            detail = response.text or "Failed to update voice settings"
+            raise HTTPException(status_code=response.status_code, detail=detail)
+
+        upstream_payload = response.json()
+        return {
+            "success": True,
+            "provider": resolved_provider,
+            "voice": upstream_payload.get("voice") if isinstance(upstream_payload, dict) else upstream_payload,
+            "message": "Voice settings updated",
+        }
+    except HTTPException:
+        raise
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail="Failed to reach local TTS endpoint")
+    except Exception:
+        logger.exception("Error updating local voice settings")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
